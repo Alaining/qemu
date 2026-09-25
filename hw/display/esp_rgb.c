@@ -93,6 +93,10 @@ static uint64_t esp_rgb_read(void *opaque, hwaddr addr, unsigned int size)
             r = s->bpp;
             break;
 
+        case A_RGB_TOUCH:
+            r = s->touch;
+            break;
+
         default:
 #if RGB_WARNING
             warn_report("[ESP RGB] Unsupported read to 0x%lx", (unsigned long) addr);
@@ -291,6 +295,9 @@ static void esp_rgb_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &esp_rgb_ops, s,
                           TYPE_ESP_RGB, ESP_RGB_IO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
+
+    /* Host tools drive the virtual touch screen with qom-set on this property */
+    object_property_add_uint32_ptr(obj, "touch", &s->touch, OBJ_PROP_FLAG_READWRITE);
 
     /* Default window size */
     s->width = ESP_RGB_MAX_WIDTH;

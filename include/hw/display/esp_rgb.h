@@ -47,9 +47,12 @@ typedef struct ESPRgbState {
 
     /* BPP */
     BppEnum bpp;
+
+    /* Virtual touch screen, set by host tools through the "touch" QOM property */
+    uint32_t touch;
 } ESPRgbState;
 
-#define ESP_RGB_IO_SIZE (A_RGB_BPP_VALUE + 4)
+#define ESP_RGB_IO_SIZE (A_RGB_TOUCH + 4)
 
 REG32(RGB_VERSION, 0x00)
     FIELD(RGB_VERSION, MAJOR, 16, 16)
@@ -78,3 +81,10 @@ REG32(RGB_UPDATE_STATUS, 0x14)
     FIELD(RGB_UPDATE_STATUS, ENA, 0, 1)
 
 REG32(RGB_BPP_VALUE, 0x18)
+
+/* Virtual touch screen (not in upstream Espressif QEMU): the current touch point, written as a
+ * whole by host tools so the guest never sees a press with stale coordinates. */
+REG32(RGB_TOUCH, 0x1c)
+    FIELD(RGB_TOUCH, X, 0, 16)
+    FIELD(RGB_TOUCH, Y, 16, 15)
+    FIELD(RGB_TOUCH, PRESSED, 31, 1)
