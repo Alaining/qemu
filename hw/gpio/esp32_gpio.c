@@ -26,8 +26,27 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
     Esp32GpioState *s = ESP32_GPIO(opaque);
     uint64_t r = 0;
     switch (addr) {
+    case A_GPIO_OUT:
+        r = s->out;
+        break;
+    case A_GPIO_OUT1:
+        r = s->out1;
+        break;
+    case A_GPIO_ENABLE:
+        r = s->enable;
+        break;
+    case A_GPIO_ENABLE1:
+        r = s->enable1;
+        break;
     case A_GPIO_STRAP:
         r = s->strap_mode;
+        break;
+    /* A pin configured as output reads back its own level, like the real pad does */
+    case A_GPIO_IN:
+        r = (s->out & s->enable) | (s->ext_in & ~s->enable);
+        break;
+    case A_GPIO_IN1:
+        r = (s->out1 & s->enable1) | (s->ext_in1 & ~s->enable1);
         break;
 
     default:
@@ -39,6 +58,48 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
 static void esp32_gpio_write(void *opaque, hwaddr addr,
                        uint64_t value, unsigned int size)
 {
+    Esp32GpioState *s = ESP32_GPIO(opaque);
+    switch (addr) {
+    case A_GPIO_OUT:
+        s->out = value;
+        break;
+    case A_GPIO_OUT_W1TS:
+        s->out |= value;
+        break;
+    case A_GPIO_OUT_W1TC:
+        s->out &= ~value;
+        break;
+    case A_GPIO_OUT1:
+        s->out1 = value;
+        break;
+    case A_GPIO_OUT1_W1TS:
+        s->out1 |= value;
+        break;
+    case A_GPIO_OUT1_W1TC:
+        s->out1 &= ~value;
+        break;
+    case A_GPIO_ENABLE:
+        s->enable = value;
+        break;
+    case A_GPIO_ENABLE_W1TS:
+        s->enable |= value;
+        break;
+    case A_GPIO_ENABLE_W1TC:
+        s->enable &= ~value;
+        break;
+    case A_GPIO_ENABLE1:
+        s->enable1 = value;
+        break;
+    case A_GPIO_ENABLE1_W1TS:
+        s->enable1 |= value;
+        break;
+    case A_GPIO_ENABLE1_W1TC:
+        s->enable1 &= ~value;
+        break;
+
+    default:
+        break;
+    }
 }
 
 static const MemoryRegionOps uart_ops = {
@@ -49,6 +110,11 @@ static const MemoryRegionOps uart_ops = {
 
 static void esp32_gpio_reset_hold(Object *obj, ResetType type)
 {
+    Esp32GpioState *s = ESP32_GPIO(obj);
+
+    /* Guest-side state resets; levels applied from outside stay as they are */
+    s->out = s->out1 = 0;
+    s->enable = s->enable1 = 0;
 }
 
 static void esp32_gpio_realize(DeviceState *dev, Error **errp)
@@ -65,6 +131,14 @@ static void esp32_gpio_init(Object *obj)
 
     memory_region_init_io(&s->iomem, obj, &uart_ops, s,
                           TYPE_ESP32_GPIO, 0x1000);
+
+    /* Pin state for host tools: read with qom-get, drive inputs with qom-set on "in"/"in1" */
+    object_property_add_uint32_ptr(obj, "out", &s->out, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "out1", &s->out1, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "enable", &s->enable, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "enable1", &s->enable1, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "in", &s->ext_in, OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint32_ptr(obj, "in1", &s->ext_in1, OBJ_PROP_FLAG_READWRITE);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
 }

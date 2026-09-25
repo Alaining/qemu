@@ -108,6 +108,8 @@ static uint64_t esp_rgb_read(void *opaque, hwaddr addr, unsigned int size)
 }
 
 
+static void rgb_update(void* opaque);
+
 static void esp_rgb_write(void *opaque, hwaddr addr,
                        uint64_t value, unsigned int size)
 {
@@ -142,6 +144,12 @@ static void esp_rgb_write(void *opaque, hwaddr addr,
 
         case A_RGB_UPDATE_STATUS:
             s->update_area = FIELD_EX32(value, RGB_UPDATE_STATUS, ENA) != 0;
+            /* Apply the update right away rather than on the next display refresh: the guest
+             * driver busy-waits on ENA, which would otherwise hang forever without a display
+             * (-display none) and cost a whole refresh period per draw call with one. */
+            if (s->update_area) {
+                rgb_update(s);
+            }
             break;
 
         case A_RGB_UPDATE_FROM:
@@ -246,8 +254,8 @@ static void rgb_invalidate(void *opaque)
     if (s->con) {
         uint32_t* data = surface_data(qemu_console_surface(s->con));
 
-        /* On invalidate, reset the display */
-        memset(data, 0, s->width * s->height * 4);
+        /* On invalidate, reset the display (the surface may be 16 or 32 bpp) */
+        memset(data, 0, s->width * s->height * (s->bpp / 8));
     }
 }
 
