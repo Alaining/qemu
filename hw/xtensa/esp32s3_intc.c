@@ -26,20 +26,35 @@
 
 #define IRQ_MAP(cpu, input) s->irq_map[cpu][input]
 
+/* The matrix is combinational, like the hardware: a CPU interrupt line is the OR of all the
+ * sources currently routed to it. Re-evaluated whenever a source level or a route changes (ESP-IDF
+ * enables/disables interrupts by re-routing sources, possibly while they are asserted). */
+static void esp32s3_intmatrix_update_cpu_int(Esp32s3IntMatrixState *s, int cpu, int out_index)
+{
+    if (s->outputs[cpu] == NULL) {
+        return;
+    }
+    int level = 0;
+    for (int src = 0; src < ESP32S3_INT_MATRIX_INPUTS; src++) {
+        if (s->levels[src] && IRQ_MAP(cpu, src) == out_index) {
+            level = 1;
+            break;
+        }
+    }
+    for (int int_index = 0; int_index < s->cpu[cpu]->env.config->nextint; ++int_index) {
+        if (s->cpu[cpu]->env.config->extint[int_index] == out_index) {
+            qemu_set_irq(s->outputs[cpu][int_index], level);
+            break;
+        }
+    }
+}
+
 static void esp32s3_intmatrix_irq_handler(void *opaque, int n, int level)
 {
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
+    s->levels[n] = !!level;
     for (int i = 0; i < ESP32S3_CPU_COUNT; ++i) {
-        if (s->outputs[i] == NULL) {
-            continue;
-        }
-        int out_index = IRQ_MAP(i, n);
-        for (int int_index = 0; int_index < s->cpu[i]->env.config->nextint; ++int_index) {
-            if (s->cpu[i]->env.config->extint[int_index] == out_index) {
-                qemu_set_irq(s->outputs[i][int_index], level);
-                break;
-            }
-        }
+        esp32s3_intmatrix_update_cpu_int(s, i, IRQ_MAP(i, n));
     }
 }
 
@@ -72,7 +87,13 @@ static void esp32s3_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, u
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
     uint8_t* map_entry = get_map_entry(s, addr);
     if (map_entry != NULL) {
+        int cpu = (addr / sizeof(uint32_t)) / ESP32S3_INT_MATRIX_INPUTS;
+        uint8_t old = *map_entry;
         *map_entry = value & 0x1f;
+        if (old != *map_entry) {
+            esp32s3_intmatrix_update_cpu_int(s, cpu, old);
+            esp32s3_intmatrix_update_cpu_int(s, cpu, *map_entry);
+        }
     }
 }
 
@@ -86,6 +107,7 @@ static void esp32s3_intmatrix_reset_hold(Object *obj, ResetType type)
 {
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(obj);
     memset(s->irq_map, INTMATRIX_UNINT_VALUE, sizeof(s->irq_map));
+    /* Source levels are owned by the peripherals and survive a matrix reset */
     for (int i = 0; i < ESP32S3_CPU_COUNT; ++i) {
         if (s->outputs[i] == NULL) {
             continue;

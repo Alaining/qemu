@@ -20,6 +20,8 @@
 #include "hw/sysbus.h"
 #include "hw/xtensa/xtensa_memory.h"
 #include "hw/misc/unimp.h"
+#include "hw/misc/esp_regfile.h"
+#include "hw/ssi/esp32s3_gpspi.h"
 #include "hw/irq.h"
 #include "hw/i2c/i2c.h"
 #include "hw/qdev-properties.h"
@@ -200,6 +202,45 @@ static void esp32s3_cpu_reset(void* opaque, int n, int level)
     }
 }
 
+/* Firmware built on ESP-IDF 4.4 (e.g. arduino-esp32 2.0.x) runs C++ global constructors that
+ * use floats before FreeRTOS starts; with CPENABLE clear, that first FP instruction ends in
+ * IDF's "Coprocessor exception" panic. Such firmware runs on real chips, so start the cores
+ * with the FPU (coprocessor 0) enabled. IDF's lazy FPU context switching still works: each
+ * task starts with its own CPENABLE. */
+static void esp32s3_cpu_enable_fpu(XtensaCPU *cpu)
+{
+    cpu->env.sregs[CPENABLE] |= 1;
+}
+
+/* GPSPI2/GPSPI3 (general-purpose SPI masters). An ILI9341 TFT sits on GPSPI2 (Arduino's
+ * default "FSPI" bus); it stays inert until its D/C GPIO is configured, e.g.
+ * -global driver=ili9341,property=dc-gpio,value=16. Its console is found by the id "ili9341"
+ * (QMP screendump device=ili9341). */
+static void esp32s3_init_gpspi(Esp32s3SocState *ss, MemoryRegion *sys_mem)
+{
+    static const struct { const char *name; hwaddr base; int irq; } buses[] = {
+        { "spi2", DR_REG_SPI2_BASE, ETS_SPI2_INTR_SOURCE },
+        { "spi3", DR_REG_SPI3_BASE, ETS_SPI3_INTR_SOURCE },
+    };
+    for (int i = 0; i < ARRAY_SIZE(buses); i++) {
+        DeviceState *spi = qdev_new(TYPE_ESP32S3_GPSPI);
+        object_property_add_child(OBJECT(ss), buses[i].name, OBJECT(spi));
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(spi), &error_fatal);
+        /* Above the catch-all peripheral I/O region (priority 0) */
+        memory_region_add_subregion_overlap(sys_mem, buses[i].base,
+                                            sysbus_mmio_get_region(SYS_BUS_DEVICE(spi), 0), 1);
+        sysbus_connect_irq(SYS_BUS_DEVICE(spi), 0,
+                           qdev_get_gpio_in(DEVICE(&ss->intmatrix), buses[i].irq));
+        if (i == 0) {
+            DeviceState *lcd = qdev_new("ili9341");
+            lcd->id = g_strdup("ili9341");
+            object_property_add_child(OBJECT(spi), "ili9341", OBJECT(lcd));  /* /machine/soc/spi2/ili9341 */
+            object_property_set_link(OBJECT(lcd), "gpio", OBJECT(&ss->gpio), &error_fatal);
+            qdev_realize_and_unref(lcd, qdev_get_child_bus(spi, "spi"), &error_fatal);
+        }
+    }
+}
+
 static void esp32s3_soc_reset(DeviceState *dev)
 {
     Esp32s3SocState *s = ESP32S3_SOC(dev);
@@ -216,11 +257,13 @@ static void esp32s3_soc_reset(DeviceState *dev)
         xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
         remove_cpu_watchpoints(&s->cpu[0]);
         cpu_reset(CPU(&s->cpu[0]));
+        esp32s3_cpu_enable_fpu(&s->cpu[0]);
     }
     if (s->requested_reset & ESP32S3_SOC_RESET_APPCPU && (ESP32S3_CPU_COUNT > 1)) {
         xtensa_select_static_vectors(&s->cpu[1].env, s->rtc_cntl.stat_vector_sel[1]);
         remove_cpu_watchpoints(&s->cpu[1]);
         cpu_reset(CPU(&s->cpu[1]));
+        esp32s3_cpu_enable_fpu(&s->cpu[1]);
     }
     s->requested_reset = 0;
 }
@@ -870,6 +913,10 @@ static void esp32s3_machine_init(MachineState *machine)
     }
 
     esp32s3_soc_add_unimp_device(sys_mem, "esp32s3.rmt", DR_REG_RMT_BASE, 0x1000);
+    /* LEDC (PWM): registers read back what the firmware wrote, so drivers can configure a
+     * timer and compute its frequency (ledc_get_freq() divides by the programmed divider). */
+    esp_regfile_create(sys_mem, "ledc", DR_REG_LEDC_BASE, 0x1000);
+    esp32s3_init_gpspi(ss, sys_mem);
     esp32s3_soc_add_unimp_device(sys_mem, "esp32s3.iomux", DR_REG_IO_MUX_BASE, 0x2000);
 
     

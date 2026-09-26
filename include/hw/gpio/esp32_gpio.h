@@ -44,3 +44,14 @@ typedef struct Esp32GpioState {
 typedef struct Esp32GpioClass {
     SysBusDeviceClass parent_class;
 } Esp32GpioClass;
+
+/* Current level of GPIO `pin` as seen on the pad: the driven level for outputs, else the level
+ * applied from outside. For peripheral models that sample control pins (e.g. a display's D/C). */
+static inline int esp32_gpio_level(const Esp32GpioState *s, int pin)
+{
+    uint32_t out = pin < 32 ? s->out : s->out1;
+    uint32_t enable = pin < 32 ? s->enable : s->enable1;
+    uint32_t ext = pin < 32 ? s->ext_in : s->ext_in1;
+    uint32_t bit = 1u << (pin % 32);
+    return !!((enable & bit ? out : ext) & bit);
+}
