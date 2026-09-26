@@ -22,6 +22,7 @@
 #include "hw/misc/unimp.h"
 #include "hw/misc/esp_regfile.h"
 #include "hw/ssi/esp32s3_gpspi.h"
+#include "hw/i2c/esp32s3_i2c.h"
 #include "hw/irq.h"
 #include "hw/i2c/i2c.h"
 #include "hw/qdev-properties.h"
@@ -238,6 +239,27 @@ static void esp32s3_init_gpspi(Esp32s3SocState *ss, MemoryRegion *sys_mem)
             object_property_set_link(OBJECT(lcd), "gpio", OBJECT(&ss->gpio), &error_fatal);
             qdev_realize_and_unref(lcd, qdev_get_child_bus(spi, "spi"), &error_fatal);
         }
+    }
+}
+
+/* I2C0/I2C1 masters. The devices on the buses are modelled outside QEMU, reached through the
+ * chardevs "i2c0-bridge"/"i2c1-bridge" when present (else every address NACKs). */
+static void esp32s3_init_i2c(Esp32s3SocState *ss, MemoryRegion *sys_mem)
+{
+    static const struct { const char *name; hwaddr base; int irq; } buses[] = {
+        { "i2c0", DR_REG_I2C_EXT_BASE, ETS_I2C_EXT0_INTR_SOURCE },
+        { "i2c1", DR_REG_I2C1_EXT_BASE, ETS_I2C_EXT1_INTR_SOURCE },
+    };
+    for (int i = 0; i < ARRAY_SIZE(buses); i++) {
+        DeviceState *i2c = qdev_new(TYPE_ESP32S3_I2C);
+        qdev_prop_set_uint32(i2c, "index", i);
+        object_property_add_child(OBJECT(ss), buses[i].name, OBJECT(i2c));
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(i2c), &error_fatal);
+        /* Above the catch-all peripheral I/O region (priority 0) */
+        memory_region_add_subregion_overlap(sys_mem, buses[i].base,
+                                            sysbus_mmio_get_region(SYS_BUS_DEVICE(i2c), 0), 1);
+        sysbus_connect_irq(SYS_BUS_DEVICE(i2c), 0,
+                           qdev_get_gpio_in(DEVICE(&ss->intmatrix), buses[i].irq));
     }
 }
 
@@ -917,6 +939,7 @@ static void esp32s3_machine_init(MachineState *machine)
      * timer and compute its frequency (ledc_get_freq() divides by the programmed divider). */
     esp_regfile_create(sys_mem, "ledc", DR_REG_LEDC_BASE, 0x1000);
     esp32s3_init_gpspi(ss, sys_mem);
+    esp32s3_init_i2c(ss, sys_mem);
     esp32s3_soc_add_unimp_device(sys_mem, "esp32s3.iomux", DR_REG_IO_MUX_BASE, 0x2000);
 
     
