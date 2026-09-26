@@ -43,7 +43,20 @@ typedef struct Esp32GpioState {
 
 typedef struct Esp32GpioClass {
     SysBusDeviceClass parent_class;
+    /* Chip-specific registers (e.g. interrupts): return true when `addr` is one of theirs */
+    bool (*read_ext)(Esp32GpioState *s, hwaddr addr, uint64_t *value);
+    bool (*write_ext)(Esp32GpioState *s, hwaddr addr, uint64_t value);
+    /* Called whenever pad levels may have changed: guest register writes, levels applied from outside */
+    void (*pads_changed)(Esp32GpioState *s);
 } Esp32GpioClass;
+
+/* Pad levels of GPIO0-63 (bit n = GPIOn): the driven level for outputs, else the level applied from outside */
+static inline uint64_t esp32_gpio_pads(const Esp32GpioState *s)
+{
+    uint32_t lo = (s->out & s->enable) | (s->ext_in & ~s->enable);
+    uint32_t hi = (s->out1 & s->enable1) | (s->ext_in1 & ~s->enable1);
+    return ((uint64_t)hi << 32) | lo;
+}
 
 /* Current level of GPIO `pin` as seen on the pad: the driven level for outputs, else the level
  * applied from outside. For peripheral models that sample control pins (e.g. a display's D/C). */
